@@ -4,12 +4,42 @@ const LOCAL_CASES_KEY = "mix-design-studio-local-cases-v1";
 const API_ROOT = "";
 
 const MATERIALS = [
-  { key: "threeQuarterRock", label: '3/4" rock' },
-  { key: "halfRock", label: '1/2" rock' },
-  { key: "crusherFines", label: "Crusher fines" },
-  { key: "sand", label: "Sand" },
-  { key: "filler", label: "Filler" },
-  { key: "binder", label: "Binder" },
+  {
+    key: "threeQuarterRock",
+    label: '3/4" rock',
+    description: "Coarse aggregate skeleton",
+    effect: "Usually lowers fines content and can open the mix, pushing voids up if overused.",
+  },
+  {
+    key: "halfRock",
+    label: '1/2" rock',
+    description: "Intermediate coarse aggregate",
+    effect: "Helps bridge coarse and fine fractions; often moderates stability and density.",
+  },
+  {
+    key: "crusherFines",
+    label: "Crusher fines",
+    description: "Fine aggregate filler fraction",
+    effect: "Tightens the blend, usually reducing voids and improving compaction if balanced.",
+  },
+  {
+    key: "sand",
+    label: "Sand",
+    description: "Natural or manufactured fine aggregate",
+    effect: "Improves packing and workability, with a moderate effect on voids and finish.",
+  },
+  {
+    key: "filler",
+    label: "Filler",
+    description: "Very fine mineral dust",
+    effect: "Fills micro-voids and stiffens the matrix; too much can make the mix brittle.",
+  },
+  {
+    key: "binder",
+    label: "Binder",
+    description: "Asphalt cement",
+    effect: "Controls cohesion and durability; higher binder usually lowers voids and lifts stability to a point.",
+  },
 ];
 
 const METRICS = [
@@ -86,6 +116,15 @@ const defaultState = {
     filler: 0,
     binder: 0,
   },
+  manualRecommendation: {
+    threeQuarterRock: 0,
+    halfRock: 0,
+    crusherFines: 0,
+    sand: 0,
+    filler: 0,
+    binder: 0,
+  },
+  manualBalanceMode: "even",
   adjustable: {
     threeQuarterRock: true,
     halfRock: true,
@@ -167,6 +206,68 @@ function normalizedShare(value, total) {
   return (value / total) * 100;
 }
 
+function getAdjustableMaterialKeys() {
+  return MATERIALS.filter((material) => state.adjustable[material.key]).map((material) => material.key);
+}
+
+function getManualBalanceMode() {
+  return state.manualBalanceMode === "sensitivity" ? "sensitivity" : "even";
+}
+
+function getSensitivityWeight(materialKey) {
+  return METRICS.reduce((sum, metric) => {
+    const value = Number(state.sensitivities[materialKey]?.[metric.key] || 0);
+    return sum + Math.abs(value);
+  }, 0);
+}
+
+function getManualBalanceWeight(materialKey) {
+  if (getManualBalanceMode() !== "sensitivity") {
+    return 1;
+  }
+  return Math.max(0.0001, getSensitivityWeight(materialKey));
+}
+
+function redistributeManualDelta(delta, excludedKey) {
+  const adjustableKeys = getAdjustableMaterialKeys().filter((key) => key !== excludedKey);
+  if (!adjustableKeys.length || Math.abs(delta) < 1e-12) {
+    return;
+  }
+
+  const weights = adjustableKeys.map((key) => getManualBalanceWeight(key));
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  const useFallback = totalWeight <= 0;
+
+  adjustableKeys.forEach((key, index) => {
+    const share = useFallback ? 1 / adjustableKeys.length : weights[index] / totalWeight;
+    state.manualRecommendation[key] = Number(state.manualRecommendation[key] || 0) - delta * share;
+  });
+}
+
+function parseLooseNumber(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : 0;
+  const cleaned = String(value ?? "")
+    .trim()
+    .replace(",", ".");
+  if (!cleaned) return 0;
+  const parsed = Number(cleaned);
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function rebalanceManualRecommendation(changedKey, nextValue) {
+  const adjustableKeys = getAdjustableMaterialKeys();
+  if (!adjustableKeys.includes(changedKey)) {
+    state.manualRecommendation[changedKey] = 0;
+    return;
+  }
+
+  const currentValue = Number(state.manualRecommendation[changedKey] || 0);
+  const desiredValue = parseLooseNumber(nextValue);
+  const delta = desiredValue - currentValue;
+  state.manualRecommendation[changedKey] = desiredValue;
+  redistributeManualDelta(delta, changedKey);
+}
+
 function buildSnapshot() {
   return {
     operatorId: state.operatorId,
@@ -179,6 +280,8 @@ function buildSnapshot() {
     actualResults: structuredClone(state.actualResults),
     sensitivities: structuredClone(state.sensitivities),
     scenario: structuredClone(state.scenario),
+    manualRecommendation: structuredClone(state.manualRecommendation),
+    manualBalanceMode: state.manualBalanceMode,
     adjustable: structuredClone(state.adjustable),
     lockTotal: state.lockTotal,
     capturedAt: new Date().toISOString(),
@@ -206,6 +309,8 @@ function applySnapshot(snapshot) {
     ]),
   );
   state.scenario = toNumberMap(merged.scenario);
+  state.manualRecommendation = toNumberMap(merged.manualRecommendation);
+  state.manualBalanceMode = merged.manualBalanceMode || defaultState.manualBalanceMode;
   state.adjustable = toBooleanMap(merged.adjustable);
   state.lockTotal = Boolean(merged.lockTotal);
   state.currentCaseId = merged.currentCaseId || null;
@@ -229,6 +334,8 @@ function exportSnapshotCsv(snapshot) {
   addSection("targetResults", snapshot.targetResults);
   addSection("actualResults", snapshot.actualResults);
   addSection("scenario", snapshot.scenario);
+  addSection("manualRecommendation", snapshot.manualRecommendation);
+  rows.push(["flags", "manualBalanceMode", snapshot.manualBalanceMode]);
   addSection("adjustable", snapshot.adjustable);
   Object.entries(snapshot.sensitivities).forEach(([materialKey, metricMap]) => {
     Object.entries(metricMap).forEach(([metricKey, value]) => {
@@ -354,6 +461,10 @@ function snapshotFromCsv(text) {
       snapshot.lockTotal = rawValue === "true";
       return;
     }
+    if (section === "flags" && key === "manualBalanceMode") {
+      snapshot.manualBalanceMode = rawValue === "sensitivity" ? "sensitivity" : "even";
+      return;
+    }
     if (section === "sensitivities") {
       const [materialKey, metricKey] = key.split(".");
       if (snapshot.sensitivities[materialKey]) snapshot.sensitivities[materialKey][metricKey] = Number(rawValue);
@@ -388,10 +499,12 @@ function createMaterialRows(container, kind) {
     row.innerHTML = `
       <div>
         <div class="label">${material.label}</div>
+        <div class="subtle">${material.description}</div>
         <div class="subtle">${kind === "target" ? "Agreed design share" : "Implemented recipe share"}</div>
       </div>
-      <div>
-        <input class="input" type="number" step="0.1" min="0" data-group="${kind}Materials" data-key="${material.key}" value="${formatNumber(share, 1)}" />
+      <div class="value-controls">
+        <input class="slider" type="range" min="0" max="100" step="0.1" data-group="${kind}Materials" data-key="${material.key}" value="${formatNumber(share, 1)}" />
+        <input class="input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-group="${kind}Materials" data-key="${material.key}" value="${formatNumber(share, 1)}" />
       </div>
       <div>
         <div class="subtle">Blend share</div>
@@ -428,7 +541,7 @@ function createResultRows(container, kind) {
         <div class="subtle">${kind === "target" ? "Desired outcome" : "Measured outcome"}</div>
       </div>
       <div>
-        <input class="input" type="number" step="0.1" data-group="${kind}Results" data-key="${metric.key}" value="${formatNumber(values[metric.key], 1)}" />
+        <input class="input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-group="${kind}Results" data-key="${metric.key}" value="${formatNumber(values[metric.key], 1)}" />
       </div>
       <div>
         <div class="subtle">Unit</div>
@@ -531,7 +644,7 @@ function renderSensitivity() {
         return `
           <div>
             <div class="subtle">${metric.label}</div>
-            <input class="input" type="number" step="0.01" data-group="sensitivities.${material.key}" data-key="${metric.key}" value="${formatNumber(value, 2)}" />
+            <input class="input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-group="sensitivities.${material.key}" data-key="${metric.key}" value="${formatNumber(value, 2)}" />
           </div>
         `;
       }).join("")}
@@ -554,10 +667,12 @@ function renderScenario() {
     row.innerHTML = `
       <div>
         <div class="label">${material.label}</div>
+        <div class="subtle">${material.description}</div>
         <div class="subtle">Scenario delta vs actual recipe</div>
       </div>
-      <div>
-        <input class="input" type="number" step="0.1" data-group="scenario" data-key="${material.key}" value="${formatNumber(state.scenario[material.key], 1)}" />
+      <div class="value-controls">
+        <input class="slider" type="range" min="-10" max="10" step="0.1" data-group="scenario" data-key="${material.key}" value="${formatNumber(state.scenario[material.key], 1)}" />
+        <input class="input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-group="scenario" data-key="${material.key}" value="${formatNumber(state.scenario[material.key], 1)}" />
       </div>
       <div>
         <div class="subtle">Selected</div>
@@ -695,6 +810,7 @@ function renderAdjustmentPanel() {
           <div>
             <div class="label">${material.label}</div>
             <div class="subtle">${state.adjustable[item.key] ? "Adjustable" : "Locked"}</div>
+            <div class="subtle">${material.effect}</div>
           </div>
           <div>
             <div class="subtle">Recommended shift</div>
@@ -729,6 +845,14 @@ function renderAdjustmentPanel() {
 
   const lock = document.getElementById("lock-total");
   lock.checked = state.lockTotal;
+}
+
+function getFinalRecommendation() {
+  const solverRecommendation = computeRecommendation();
+  return solverRecommendation.map((item) => ({
+    key: item.key,
+    delta: item.delta + Number(state.manualRecommendation[item.key] || 0),
+  }));
 }
 
 function computeRecommendation() {
@@ -847,8 +971,13 @@ function solveLinearSystem(matrix, rhs) {
 function renderRecommendation() {
   const container = document.getElementById("recommendation");
   const activeMaterials = MATERIALS.filter((material) => state.adjustable[material.key]);
-  const recommendation = computeRecommendation();
-  const predicted = predictResults(state.actualResults, Object.fromEntries(recommendation.map((item) => [item.key, item.delta])));
+  const solverRecommendation = computeRecommendation();
+  const finalRecommendation = getFinalRecommendation();
+  const manualSum = activeMaterials.reduce((sum, material) => sum + Number(state.manualRecommendation[material.key] || 0), 0);
+  const predicted = predictResults(
+    state.actualResults,
+    Object.fromEntries(finalRecommendation.map((item) => [item.key, item.delta])),
+  );
 
   const bestVoids = predicted.voids - state.targetResults.voids;
   const bestComp = predicted.compaction - state.targetResults.compaction;
@@ -861,15 +990,47 @@ function renderRecommendation() {
 
   container.innerHTML = `
     <div class="recommendation-block">
-      <strong>Recommended blend shift</strong><br />
-      ${recommendation
+      <div class="recommendation-header">
+        <strong>Recommended blend shift</strong>
+        <label class="mode-control">
+          <span>Balance mode</span>
+          <select id="manual-balance-mode" class="input mode-select">
+            <option value="even" ${getManualBalanceMode() === "even" ? "selected" : ""}>Even split</option>
+            <option value="sensitivity" ${getManualBalanceMode() === "sensitivity" ? "selected" : ""}>Sensitivity weighted</option>
+          </select>
+        </label>
+      </div>
+      <div class="subtle" style="margin: 8px 0 14px;">
+        ${getManualBalanceMode() === "sensitivity"
+          ? "Operator balance uses sensitivity scores so the strongest movers absorb more of the redistribution."
+          : "Operator balance is spread evenly across the remaining adjustable materials."}
+      </div>
+      ${solverRecommendation
         .map(
           (item) =>
-            `${MATERIALS.find((material) => material.key === item.key).label}: <strong>${
-              item.delta > 0 ? "+" : ""
-            }${formatNumber(item.delta, 2)}%</strong>`,
+            {
+              const manual = Number(state.manualRecommendation[item.key] || 0);
+              const finalValue = item.delta + manual;
+              return `
+                <div class="recommendation-control">
+                  <div class="recommendation-control-label">
+                    <div>
+                      <strong>${MATERIALS.find((material) => material.key === item.key).label}</strong>
+                      <div class="subtle">${MATERIALS.find((material) => material.key === item.key).description}</div>
+                      <div class="subtle">${MATERIALS.find((material) => material.key === item.key).effect}</div>
+                    </div>
+                    <span class="subtle">Solver ${item.delta > 0 ? "+" : ""}${formatNumber(item.delta, 2)}% · Manual ${manual > 0 ? "+" : ""}${formatNumber(manual, 2)}%</span>
+                  </div>
+                  <div class="value-controls">
+                    <input class="slider" type="range" min="-5" max="5" step="0.1" data-group="manualRecommendation" data-key="${item.key}" value="${formatNumber(manual, 1)}" ${state.adjustable[item.key] ? "" : "disabled"} />
+                    <input class="input" type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-group="manualRecommendation" data-key="${item.key}" value="${formatNumber(manual, 2)}" ${state.adjustable[item.key] ? "" : "disabled"} />
+                  </div>
+                  <div class="recommendation-final ${finalValue >= 0 ? "good" : "danger"}">${finalValue > 0 ? "+" : ""}${formatNumber(finalValue, 2)}%</div>
+                </div>
+              `;
+            },
         )
-        .join("<br />")}
+        .join("")}
     </div>
     <div class="recommendation-block">
       <strong>Predicted outcome after recommendation</strong><br />
@@ -898,6 +1059,11 @@ function renderRecommendation() {
       Void gap: <strong class="${Math.abs(bestVoids) < 0.2 ? "good" : "danger"}">${bestVoids > 0 ? "+" : ""}${formatNumber(bestVoids, 2)}</strong><br />
       Compaction gap: <strong class="${Math.abs(bestComp) < 0.2 ? "good" : "danger"}">${bestComp > 0 ? "+" : ""}${formatNumber(bestComp, 2)}</strong><br />
       Stability gap: <strong class="${Math.abs(bestStab) < 0.2 ? "good" : "danger"}">${bestStab > 0 ? "+" : ""}${formatNumber(bestStab, 2)}</strong>
+    </div>
+    <div class="recommendation-block">
+      <strong>Manual balance</strong><br />
+      Manual overlay sum: <strong class="${Math.abs(manualSum) < 0.01 ? "good" : "danger"}">${manualSum > 0 ? "+" : ""}${formatNumber(manualSum, 2)}%</strong><br />
+      Dragging one material will redistribute the opposite change across the other adjustable materials.
     </div>
   `;
 }
@@ -1075,11 +1241,12 @@ function bindEvents() {
   document.addEventListener("input", (event) => {
     const target = event.target;
     if (!(target instanceof HTMLInputElement)) return;
+    if (target.type !== "range") return;
 
     const { group, key } = target.dataset;
     if (!group || !key) return;
 
-    const value = Number(target.value);
+    const value = parseLooseNumber(target.value);
     if (group === "targetMaterials" || group === "actualMaterials") {
       state[group][key] = value;
     } else if (group === "targetResults" || group === "actualResults") {
@@ -1089,6 +1256,8 @@ function bindEvents() {
       state.sensitivities[materialKey][key] = value;
     } else if (group === "scenario") {
       state.scenario[key] = value;
+    } else if (group === "manualRecommendation") {
+      rebalanceManualRecommendation(key, value);
     }
 
     saveState();
@@ -1106,9 +1275,42 @@ function bindEvents() {
       return;
     }
 
+    if (target.id === "manual-balance-mode") {
+      state.manualBalanceMode = target.value === "sensitivity" ? "sensitivity" : "even";
+      saveState();
+      render();
+      return;
+    }
+
     const adjustableKey = target.dataset.adjustable;
     if (adjustableKey) {
+      const previousValue = Number(state.manualRecommendation[adjustableKey] || 0);
       state.adjustable[adjustableKey] = target.checked;
+      if (!target.checked) {
+        state.manualRecommendation[adjustableKey] = 0;
+        redistributeManualDelta(-previousValue, adjustableKey);
+      }
+      saveState();
+      render();
+      return;
+    }
+
+    const { group, key } = target.dataset;
+    if (!group || !key) return;
+    if (target.type === "text") {
+      const value = parseLooseNumber(target.value);
+      if (group === "targetMaterials" || group === "actualMaterials") {
+        state[group][key] = value;
+      } else if (group === "targetResults" || group === "actualResults") {
+        state[group][key] = value;
+      } else if (group.startsWith("sensitivities.")) {
+        const materialKey = group.split(".")[1];
+        state.sensitivities[materialKey][key] = value;
+      } else if (group === "scenario") {
+        state.scenario[key] = value;
+      } else if (group === "manualRecommendation") {
+        rebalanceManualRecommendation(key, value);
+      }
       saveState();
       render();
     }

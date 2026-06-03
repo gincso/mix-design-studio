@@ -312,8 +312,68 @@ h2 {
   font: inherit;
 }
 
+.value-controls {
+  display: grid;
+  gap: 8px;
+}
+
+.recommendation-control {
+  display: grid;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.recommendation-control:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+
+.recommendation-control-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.recommendation-final {
+  font-weight: 800;
+}
+
+.recommendation-header {
+  display: flex;
+  gap: 16px;
+  justify-content: space-between;
+  align-items: end;
+  flex-wrap: wrap;
+}
+
+.mode-control {
+  display: grid;
+  gap: 6px;
+  min-width: 220px;
+  font-size: 0.84rem;
+  color: var(--muted);
+}
+
+.mode-select {
+  min-width: 220px;
+}
+
 .field .input {
   min-width: 18rem;
+}
+
+.slider {
+  width: 100%;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+
+.slider:disabled,
+.input:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .input:focus {
@@ -507,6 +567,24 @@ h2 {
     min-width: 100%;
   }
 
+  .value-controls {
+    gap: 10px;
+  }
+
+  .recommendation-control-label {
+    display: grid;
+    align-items: start;
+  }
+
+  .recommendation-header {
+    align-items: start;
+  }
+
+  .mode-control,
+  .mode-select {
+    min-width: 100%;
+  }
+
   .gradation-row {
     grid-template-columns: 1fr;
   }
@@ -536,11 +614,21 @@ h2 {
   .compare-line,
   .gradation-row,
   .history-row,
-  .gradation-bar {
+  .gradation-bar,
+  .value-controls,
+  .recommendation-control-label {
     grid-template-columns: 1fr;
   }
 
   .history-row {
+    display: grid;
+  }
+
+  .recommendation-control-label {
+    display: grid;
+  }
+
+  .recommendation-header {
     display: grid;
   }
 }
